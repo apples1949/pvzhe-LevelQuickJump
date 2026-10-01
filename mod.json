@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 2,
+  "id": "levelquickjump",
+  "name": "墓碑直达上次关卡",
+  "version": "1.3.0",
+  "author": "本地",
+  "description": "点主界面墓碑（冒险/挑战/生存/解谜/小游戏/我是僵尸/杂交乐园）进入关卡选择时：**停在「章节选择页」，并把上次打开的那个章节自动滚到正中**（居中项自动放大 1.5 倍 + 高亮，两旁缩小变淡）—— 不用手动滑动，直接点那个高亮的章节就进关卡页。按大类分别记忆，存进游戏存档（ModLastChapter|<大类>），重启仍有效。v1.3.0：定稿。源码顶部开关 JumpToMainCategoryPage=true 即本行为；改 false 重新编译=直接进上次章节的关卡列表（两种模式共用同一份记忆，切换不丢）。诊断日志 EnableDiagLog 已关闭。",
+  "dependencies": [],
+  "conflicts": [],
+  "provides": {},
+  "overrides": {},
+  "scripts": [],
+  "runtimeAssembly": "Runtime/ModAssembly.dll",
+  "runtimeEntryType": "LevelQuickJumpEntry",
+  "runtimeApiVersion": 1,
+  "runtimeAssemblyPolicy": "optional",
+  "blueprints": [],
+  "translations": [],
+  "resources": [
+    "Runtime/ModAssembly.dll"
+  ]
+}

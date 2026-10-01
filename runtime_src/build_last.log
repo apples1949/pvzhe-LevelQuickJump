@@ -1,0 +1,13 @@
+[compile] RC=0
+0 个警告
+    0 个错误
+
+已用时间 00:00:01.11
+[copy] Runtime/ModAssembly.dll 未变（20992 B）
+[compile] OK
+[package] RC=0
+OK -> C:\Users\apples1949\Desktop\植物大战僵尸杂交重制版\mods\LevelQuickJump\dist\LevelQuickJump.pmod
+  大小: 10719 字节
+  内容: ['mod.json', 'Runtime/ModAssembly.dll']
+  包内 DLL md5: 06565446e14200166627a59560ed6fa3 （应与 bin/Release 及装机包一致）
+[install] C:\Users\apples1949\AppData\Roaming\Godot\app_userdata\植物大战僵尸杂交版\Mods\LevelQuickJump.pmod (10719 B)
