@@ -197,6 +197,9 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 	/// <summary>"已停在大类页面"这条只报一次。</summary>
 	private bool _reportedMainCategoryMode;
 
+	/// <summary>"修复 isEditor 泄漏"这条只报一次（v1.4.0）。</summary>
+	private bool _editorLeakFixed;
+
 	/// <summary>本次进入章节选择页是否已经"钉住 -1"（阻止 `_Ready()` 自动展开成关卡列表）。</summary>
 	private bool _pinnedThisEntry;
 
@@ -317,6 +320,12 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 				return;
 			}
 
+			// ★★★ v1.4.0：修复 `Global.isEditor` 状态泄漏（用户反馈第 3 个问题）。
+			//   与本 Mod 的"墓碑直达"无关，但同属**关卡导航状态**，且症状就出在
+			//   「进过自制关卡选择页 → 退出 → 任意关卡 → 暂停」这条链路上，
+			//   所以放在这里统一修掉（详见方法注释）。
+			FixStaleEditorFlag(global);
+
 			// ⓪ 主界面：给墓碑按钮挂 ButtonDown。
 			//   主路径仍是下面的"每帧写回"（见那里的时序说明）；这里是**抢同一帧的先后**：
 			//   `ButtonDown` 在 `Pressed` 之前发，先一步把 currentChapterId 写回去，
@@ -419,12 +428,31 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 						+ " 章节数=" + ChapterCountSafe());
 					return;
 				}
+				// ★★★ 2026-10-01 第十次实机定案（用户："我现在怎么滑动不了章节了"）：
+				//   **一旦定位完成就必须彻底停手**，否则每帧 `SetPos` 会把章节菜单
+				//   强行拽回记录的那一章 ⇒ 玩家怎么拖都会被弹回去 = "滑不动"。
+				//   （`SetPos` 会重写 `currentIndex/currentPos` 并把所有子项位置钉死，
+				//     等于每帧抵消掉 `DragMenu._Input` 里累积的拖动位移。）
+				//   ⇒ ① 已完成就直接 return，不再调用；
+				//     ② 重试次数封顶，封顶后标记完成；
+				//     ③ 未完成期间**一旦检测到玩家正在拖动**（`mousePress`）也立刻停手，
+				//        把控制权交还玩家。
+				if (_autoLocatedThisEntry)
+				{
+					return;
+				}
+				if (ChapterMenuDragging())
+				{
+					_autoLocatedThisEntry = true;
+					Diag("检测到玩家正在拖动章节菜单 ⇒ 停止自动定位，交还控制权");
+					return;
+				}
 				// ★ 连续多帧反复 SetPos：`DragMenu.SetChildPos` 会把**每个新加进来的子项**
 				//   摆到最右端，若 `InitChapter()` 比我们晚一帧收尾，单次 SetPos 会被它推回去。
-				//   这里重试 N 帧，彻底压住这种竞争。
+				//   所以重试几帧 —— 但**有上限、且完成即停**（见上）。
 				//
-				// ★★★ 2026-10-01 第九次实机定案：**绝对不要在这里调 `SelectChapter()`**！
-				//   用户反馈"你这怎么显示的是关卡选择页面？" —— 根因就是这一行。
+				// ★★★ 绝对不要在这里调 `SelectChapter()`！
+				//   用户反馈"你这怎么显示的是关卡选择页面？" —— 根因就是那一行。
 				//   `Select(id)` 在 Chapter 态下干的是"**进入关卡页**"：
 				//       currentChapterIndex = id;
 				//       chapterMenu.Set("alive", false);
@@ -440,7 +468,7 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 				_autoLocateRetry++;
 				if (_autoLocateRetry >= 12)
 				{
-					_autoLocatedThisEntry = true;
+					_autoLocatedThisEntry = true;   // ← 关键：置位后上面的守卫会让我们彻底停手
 					Diag("已把章节菜单定位到第 " + wantLv + " 章并保持放大高亮"
 						+ "（大类=" + cat + " 章节项=" + _chapterItemCount
 						+ " 重试=" + _autoLocateRetry + " 帧；未调用 Select，故仍停在章节页）");
@@ -809,6 +837,27 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 			return GetMember(lc, "chapterMenu") as Node;
 		}
 		catch { return null; }
+	}
+
+	/// <summary>
+	/// 玩家此刻是否**正按着鼠标拖动章节菜单**（`DragMenu.mousePress`）。
+	///
+	/// 用途：自动定位的重试期间，只要玩家一上手就立刻停手，
+	/// 否则我们每帧 `SetPos` 会把他拖出来的位移抹掉 ⇒ "滑不动"。
+	/// </summary>
+	private bool ChapterMenuDragging()
+	{
+		try
+		{
+			Node menu = GetChapterMenu();
+			if (menu == null)
+			{
+				return false;
+			}
+			object mp = GetMember(menu, "mousePress");
+			return (mp is bool b) && b;
+		}
+		catch { return false; }
 	}
 
 	/// <summary>
@@ -1300,6 +1349,46 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 		}
 	}
 
+	/// <summary>
+	/// 取游戏单例（`Instance`）。
+	/// ⚠️ 游戏源码里 `Instance` **写法不一致**：`TowerDefenseManager.Instance` /
+	///   `Global.Instance` / `SceneManager.Instance` 是**属性**，而
+	///   `GameSaveManager.Instance` 是**字段** ⇒ 两种都要试。
+	/// </summary>
+	private static object GetSingleton(string typeName)
+	{
+		try
+		{
+			Type t = null;
+			foreach (System.Reflection.Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
+			{
+				try { t = asm.GetType(typeName, throwOnError: false); } catch { }
+				if (t != null)
+				{
+					break;
+				}
+			}
+			if (t == null)
+			{
+				return null;
+			}
+			PropertyInfo p = t.GetProperty("Instance",
+				BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+			if (p != null)
+			{
+				return p.GetValue(null);
+			}
+			FieldInfo f = t.GetField("Instance",
+				BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+			if (f != null)
+			{
+				return f.GetValue(null);
+			}
+		}
+		catch { }
+		return null;
+	}
+
 	private static object GetMember(object target, string name)
 	{
 		if (target == null)
@@ -1444,6 +1533,129 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 			}
 		}
 		return false;
+	}
+
+	/// <summary>
+	/// 修复游戏的 `Global.isEditor` **状态泄漏**（用户 2026-10-01 反馈的第 3 个问题）。
+	///
+	/// ── 现象 ────────────────────────────────────────────────────────────
+	///   进过「自制关卡选择页面」再退出，之后到任意关卡暂停时，
+	///   暂停菜单显示的是「**返回编辑器**」，而图鉴 / 主菜单按钮被隐藏。
+	///
+	/// ── 根因（读源码，非推测）──────────────────────────────────────────
+	///   `DialogBattlePause._Ready()`：
+	///       if (Global.Instance.isEditor) {
+	///           levelEditorButton.Visible = true;     // 「返回编辑器」
+	///           handbookButton.Visible   = false;     // 图鉴
+	///           mainMenuButton.Visible   = false;     // 主菜单
+	///       }
+	///   ⇒ 它**只**看 `Global.isEditor`，**不看当前场景**。
+	///   而 `LevelEditorStage._Ready()` 会把它设成 `true`（`LevelEditorStage.cs:120`），
+	///   只有三条退出路径会清掉：
+	///       `LevelEditorBackButtonPressed`(L421)、`ModLevelsButtonPressed`(L219)、
+	///       `DialogMainMenuOption`(L101)。
+	///   从别的路径离开编辑器（或中途再进过一次编辑器）⇒ 该标志**留在 true**，
+	///   之后所有普通战斗的暂停菜单都会误显示「返回编辑器」。
+	///
+	/// ── 修法（必须保留合法的"编辑器试玩"）─────────────────────────────
+	///   在编辑器里按「测试」试玩时（`LevelTestButtonPressed` L356-366）：
+	///       `enterLevelMode = "DiyLevel"` + `isEditor = true` → 进 TowerDefense。
+	///   **此时暂停菜单应该显示「返回编辑器」**（这是正当功能，绝不能误清）。
+	///   ⇒ 判定：只有 **不在编辑器场景** 且 `enterLevelMode` **不属于**
+	///      {DiyLevel, LoadLevel, OnlineLevel}（= `HandbookButtonPressed` 里
+	///      按「返回编辑器」会回到 `LevelEditorStage` 的那三种）时，才清掉。
+	///
+	///   安全依据：游戏自己的编辑器判定**几乎全部**是
+	///      `Global.isEditor && SceneManager.CurrentScene == "LevelEditorStage"`
+	///   双条件（`TowerDefenseManager` L968、`PacketBank` L645、`MapControl` L35…），
+	///   所以在非编辑器场景清掉 `isEditor` 不影响任何编辑器逻辑。
+	/// </summary>
+	private void FixStaleEditorFlag(object global)
+	{
+		try
+		{
+			object cur = GetMember(global, "isEditor");
+			if (!(cur is bool ed) || !ed)
+			{
+				return;      // 已是 false ⇒ 无事可做
+			}
+			// ① 正在编辑器场景里 ⇒ 正常，别动。
+			//   ⚠️ 用**两个独立信号**判断，任一说是编辑器就放过（宁可漏修，绝不误清）：
+			//     (a) 场景树当前场景的节点名；
+			//     (b) 游戏自己的 `SceneManager.Instance.currentScene`
+			//         （源码里大量这样用，如 `ShovelManager.cs:285`）。
+			string scene = "";
+			try
+			{
+				Node sc = GodotObject.IsInstanceValid(_tree) ? _tree.CurrentScene : null;
+				scene = (sc == null) ? "" : sc.Name.ToString();
+			}
+			catch { }
+			string sceneMgr = "";
+			try
+			{
+				sceneMgr = (GetMember(GetSingleton("SceneManager"), "currentScene") as string) ?? "";
+			}
+			catch { }
+			if (scene == "LevelEditorStage" || sceneMgr == "LevelEditorStage")
+			{
+				return;
+			}
+			// ② 编辑器发起的战斗（试玩 / 载入 / 联机）⇒ 保留「返回编辑器」
+			string mode = "";
+			try { mode = (GetMember(global, "enterLevelMode") as string) ?? ""; } catch { }
+			if (mode == "DiyLevel" || mode == "LoadLevel" || mode == "OnlineLevel")
+			{
+				return;
+			}
+			// ③ 其余 ⇒ 泄漏，清掉
+			SetMemberBool(global, "isEditor", false);
+			if (!_editorLeakFixed)
+			{
+				_editorLeakFixed = true;
+				Info("已修复 Global.isEditor 状态泄漏（场景=" + scene
+					+ " SceneManager=" + sceneMgr
+					+ " enterLevelMode=" + mode
+					+ "）：原本会让暂停菜单误显示「返回编辑器」。");
+			}
+		}
+		catch { }
+	}
+
+	/// <summary>
+	/// 写 bool 成员（属性优先、字段兜底）。
+	/// `Global.isEditor` 是 `public bool isEditor { get; set; }`（属性）。
+	/// </summary>
+	private static void SetMemberBool(object target, string name, bool v)
+	{
+		if (target == null)
+		{
+			return;
+		}
+		try
+		{
+			for (Type t = target.GetType(); t != null; t = t.BaseType)
+			{
+				PropertyInfo p = t.GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic
+					| BindingFlags.Instance | BindingFlags.DeclaredOnly);
+				if (p != null && p.CanWrite && p.PropertyType == typeof(bool))
+				{
+					p.SetValue(target, v);
+					return;
+				}
+			}
+			for (Type t = target.GetType(); t != null; t = t.BaseType)
+			{
+				FieldInfo f = t.GetField(name, BindingFlags.Public | BindingFlags.NonPublic
+					| BindingFlags.Instance | BindingFlags.DeclaredOnly);
+				if (f != null && f.FieldType == typeof(bool))
+				{
+					f.SetValue(target, v);
+					return;
+				}
+			}
+		}
+		catch { }
 	}
 
 	private void Info(string msg)
