@@ -6,11 +6,22 @@
 | 项 | 值 |
 |---|---|
 | Mod ID | `levelquickjump` |
-| 版本 | 1.1.0 |
+| 版本 | **1.4.0** |
 | 入口类型 | `LevelQuickJumpEntry` |
 | 程序集身份名 | `JTYLevelQuickJump`（包内文件名仍是 `Runtime/ModAssembly.dll`） |
 | 成品 | [`dist/LevelQuickJump.pmod`](dist/LevelQuickJump.pmod) |
 | 类型 | 纯托管插件（无资源覆盖、无 `provides`/`overrides`） |
+
+---
+
+## 版本历史
+
+| 版本 | 变更 |
+| --- | --- |
+| **1.4.0** | 修复游戏 `Global.isEditor` **状态泄漏** —— 进过自制关卡选择页再退出后，到**任意**关卡暂停会误显示「返回编辑器」；现在非编辑器场景下自动清掉该标志（编辑器内测试试玩 DiyLevel / LoadLevel / OnlineLevel 三种情况**保留不动**） |
+| 1.3.0 | 内部开关定稿：停在**章节选择页** + 把记录章节**自动滚到正中**（居中项放大高亮） |
+| 1.1.0 | 按大类分别记忆上次打开的章节，存进存档 |
+| 1.0.1 | 首个可用版本 |
 
 ---
 
