@@ -47,10 +47,17 @@ using PVZHE.ModEditor.ModSystem;
 /// </summary>
 public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 {
+	// 赞助码注入器（SponsorQrInjector.cs 共享组件）用的包根缓存
+	internal static string SponsorQrRoot = null;
+
 	private const string LogPrefix = "[LevelQuickJump] ";
 
 	/// <summary>存档键前缀：每个大类一个小类记忆。用 `|` 与游戏自带键分开。</summary>
 	private const string SaveKeyPrefix = "ModLastChapter|";
+		/// <summary>★ 新增：记录"上次的具体关卡 id"（与章节并列存一份）。</summary>
+		private const string LevelKeyPrefix = "ModLastLevel|";
+		private static bool _wantLevel;
+		private static int _pendingLevelId = -1;
 
 	/// <summary>
 	/// ★★★ 内部开关（2026-10-01 按用户要求加入）：点击墓碑之后停在**哪一层**。
@@ -74,10 +81,17 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 	/// 两种模式**共用同一份记忆**（`ModLastChapter|<大类>` 一直在记录），
 	/// 所以随时翻这个开关、重新编译打包即可切换，不会丢记忆。
 	/// </summary>
-	private static readonly bool JumpToMainCategoryPage = true;
+	/// <summary>
+		/// ★ 点击墓碑后停在**哪一层**（由「Mod 配置」的 jumpTarget 决定）：
+		///   true  = 停在**章节选择页**（并把上次的章节滚到正中/高亮）
+		///   false = **直达章节**（自动展开上次那个小类，直接看到关卡列表）
+		/// ⚠️ 两种模式**共用同一份记忆**（`ModLastChapter|<大类>`），随时切换不会丢记录。
+		/// </summary>
+		private static bool JumpToMainCategoryPage = true;
+		private const string KJumpTarget = "jumpTarget";
 
 	/// <summary>诊断日志总开关（排查时置 true）。</summary>
-	private static readonly bool EnableInfoLog = false;
+	private static bool EnableInfoLog;   // 由 Initialize 从「Mod 配置」读取（原为编译期常量）
 
 	/// <summary>
 	/// ★ **诊断直出总开关**（2026-10-01 用户要求"关掉 log"后新增）。
@@ -90,7 +104,7 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 	///   （历史遗留，默认就关着）；本开关门控的是**我为了定位那几轮 bug 临时加的直出行**。
 	///   两个都关 = 这个 Mod 在日志里完全安静（只剩 `Warn` 的异常报告，那个应该保留）。
 	/// </summary>
-	private static readonly bool EnableDiagLog = false;
+	private static bool EnableDiagLog;   // 由 Initialize 从「Mod 配置」读取（原为编译期常量）
 
 	/// <summary>诊断直出（受 <see cref="EnableDiagLog"/> 门控，异常全吞）。</summary>
 	private void Diag(string msg)
@@ -104,7 +118,7 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 		//   于是 `Diag` 自己调自己 ⇒ **无限递归 ⇒ StackOverflowException**，
 		//   而且它连 catch 都抓不住（栈溢出直接终止线程）⇒ 每帧回调整体失效，
 		//   表现就是"墓碑点了完全没效果"。第五次实机才揪出来。
-		try { GD.Print(LogPrefix + msg); } catch { }
+		try { if (EnableInfoLog) { GD.Print(LogPrefix + msg); } } catch { }
 	}
 
 	/// <summary>
@@ -231,8 +245,96 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 
 	// ================================================================ 入口三回调
 
-	public void Initialize(XWModRuntimeContext context)
+	
+	// ============================================================ 配置面板接线
+	//
+	// mod.json 里声明了 enableLog（bool，默认 false）。
+	// 这里在 Initialize 读一次 —— 老宿主没有 context.Settings 时吞异常、按 false 处理。
+	// 用 Get<object> 而不是 Get<bool>：宿主把值存成 Dictionary<string, object>，
+	// 直接 Get<bool> 可能抛 InvalidCastException。
+
+	/// <summary>
+	/// 读「落地层」设置：
+	///   chapterList = 停在章节选择页（并把上次章节滚到正中）—— 便于自己挑关卡；
+	///   chapter     = 直达章节（自动展开上次的小类，直接看到关卡列表）。
+	/// ⚠️ 注意：本 Mod 记忆的是**章节（小类）**，没有记录到具体关卡 ——
+	///    用户要的「直达关卡」需另实现（见计划 R62）。
+	/// </summary>
+	private static void ApplyJumpTargetSetting(XWModRuntimeContext context)
 	{
+		try
+		{
+			if (context == null) { return; }
+			object v = context.Settings.Get<object>(KJumpTarget);
+			string s = null;
+			if (v is string str) { s = str; }
+			else if (v is System.Text.Json.JsonElement je && je.ValueKind == System.Text.Json.JsonValueKind.String) { s = je.GetString(); }
+			if (string.IsNullOrWhiteSpace(s)) { return; }
+			s = s.Trim();
+			if (s.Equals("chapter", StringComparison.OrdinalIgnoreCase))
+			{
+				// ★ v1.4.2：旧值 chapter 与 level 行为重复（都只到关卡列表）⇒ 归并到 level
+				JumpToMainCategoryPage = false;
+				_wantLevel = true;
+			}
+			else if (s.Equals("level", StringComparison.OrdinalIgnoreCase))
+			{
+				JumpToMainCategoryPage = false;   // 直达关卡：先展开章节
+				_wantLevel = true;                // 再延后选中具体关卡
+			}
+			else if (s.Equals("chapterList", StringComparison.OrdinalIgnoreCase))
+			{
+				JumpToMainCategoryPage = true;    // 停在章节选择页
+			}
+		}
+		catch { }
+	}
+
+	private static bool ReadLogSetting(XWModRuntimeContext context)
+	{
+		try
+		{
+			if (context == null)
+			{
+				return false;
+			}
+			object v = context.Settings.Get<object>("enableLog");
+			if (v is bool b)
+			{
+				return b;
+			}
+			if (v is string s && bool.TryParse(s, out bool sb))
+			{
+				return sb;
+			}
+			if (v is System.Text.Json.JsonElement je)
+			{
+				if (je.ValueKind == System.Text.Json.JsonValueKind.True) { return true; }
+				if (je.ValueKind == System.Text.Json.JsonValueKind.False) { return false; }
+			}
+			return false;
+		}
+		catch
+		{
+			return false;
+		}
+	}
+
+public void Initialize(XWModRuntimeContext context)
+	{
+			try { SponsorQrRoot = context.PackageRoot; } catch { }
+			try
+			{
+				if (context?.Settings != null && !_settingsSubscribedLqj)
+				{
+					context.Settings.Changed += OnRuntimeSettingsChanged;
+					_settingsSubscribedLqj = true;
+				}
+			}
+			catch { }
+			EnableInfoLog = false;   // ★ 2026-10-14 用户要求：默认关闭所有日志（原：EnableInfoLog = ReadLogSetting(context)）
+			ApplyJumpTargetSetting(context);   // 落地层：章节页 or 直达章节
+
 		try
 		{
 			_context = context;
@@ -291,6 +393,7 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 
 	private void OnProcessFrame()
 	{
+		try { SponsorQrInjector.Tick(Engine.GetMainLoop() as SceneTree, "墓碑直达上次关卡", SponsorQrRoot, "Resources/SponsorQR.png"); } catch { }
 		try
 		{
 			if (_tree == null || !GodotObject.IsInstanceValid(_tree) || _tree.Root == null)
@@ -333,7 +436,7 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 			HookGraveButtons(global);
 
 			// 当前是否在"关卡选择"场景（靠节点类名判断，不依赖 SceneManager 的字段名）
-			bool inLevelChoose = FindNodeByClassName(_tree.Root, "LevelChoose") != null;
+			bool inLevelChoose = CachedLevelChoose() != null;
 			if (!inLevelChoose)
 			{
 				// 离开关卡选择 ⇒ 等连续 N 帧确认真的走了，再清"本次已恢复"标记，
@@ -396,6 +499,7 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 						_lastSavedCat = cat;
 						_lastSavedChapter = chapterId;
 						WriteSaved(cat, chapterId);
+						try { WriteSaved(cat, CurrentLevelId(), LevelKeyPrefix); } catch { }   // ★ 并列记关卡
 						Diag("记住小类：大类=" + cat + " 章节=" + chapterId
 							+ "（回读=" + ReadSaved(cat) + "）");
 					}
@@ -411,7 +515,7 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 				}
 				if (chapterId != -1)
 				{
-					_pChapterId.SetValue(global, -1);
+					SetInt(_pChapterId, global, -1);
 				}
 				int wantPending = ReadSaved(cat);
 
@@ -533,8 +637,9 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 				Info("记忆的章节 " + want + " 超出当前大类的章节数，跳过。");
 				return;
 			}
-			_pChapterId.SetValue(global, want);
+			SetInt(_pChapterId, global, want);
 			SelectChapter(want);
+			if (_wantLevel) { _pendingLevelId = ReadSaved(cat, LevelKeyPrefix); TrySelectLevelDeferred(cat, 0); }
 			// 用 GD.Print 直出（不受 EnableInfoLog 门控）——这是核心行为，用户要能自证
 			try
 			{
@@ -723,6 +828,59 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 	/// 为什么不怕"重复挂"：按实例 id 记账，一个按钮只挂一次；
 	/// 主菜单重建（新实例）时 id 会变，自动重新挂。
 	/// </summary>
+	// ─────────────────────────────────────────────────────────────────────────────
+	// ★★ 性能（2026-10-12 真机探针定位）：**这才是那 21ms/帧的真凶**（不是 CachedLevelChoose）。
+	//
+	// 本方法被 `OnProcessFrame` **每帧**调用，内部对 `GraveButtons` 里的 **7 个**墓碑按钮
+	// 各调一次 `FindByPathOrTail(_tree.Root, …)`。而该方法在 ① `GetNodeOrNull(path)`、
+	// ② 逐一级子节点再拼路径 都失败后，会落到 ③ **`FindNodeByName(root, tail)` —— 整树递归按名枚举**。
+	// 战斗场景里根本没有墓碑按钮 ⇒ **每一帧 7 次整树递归**。
+	//
+	// 真机实测（诊断构建采样）：本 Mod 回调 均 21.02ms/帧、中位 18.60、p95 48.21、最大 100.21，
+	// 而当时 12 个 Mod 回调合计 26.8ms、帧周期 38.6ms ⇒ **它一个占全帧的一半**。
+	// （我第一轮误修了同一函数里的 `CachedLevelChoose`，数字没变就是这个原因。）
+	//
+	// 修法：墓碑按钮**只存在于主菜单** ⇒
+	//   ① 7 个全部已挂钩、且节点都还存活时，直接返回（主菜单重建 ⇒ IsInstanceValid 失效 ⇒ 自动恢复扫描）；
+	//   ② 否则最多每 15 帧扫一次（首次挂钩延迟 ≤0.25s，体感无差）。
+	// ─────────────────────────────────────────────────────────────────────────────
+	private readonly System.Collections.Generic.List<Node> _graveBtnNodes =
+		new System.Collections.Generic.List<Node>(16);   // 上次扫描命中的按钮节点
+	private ulong _graveScanFrame;
+	/// <summary>
+	/// 扫描间隔（帧）：找到按钮时 15 帧（主菜单新建后快速挂钩）；
+	/// **一个都没找到时退避到 60 帧** —— 战斗/关卡选择里本来就没有墓碑按钮，
+	/// 每次扫描都是 7 次整树递归白跑。真机实测：15 帧节流时本 Mod 仍占 1.865ms/帧
+	/// （中位只有 0.249ms，说明就是这 7 次查找周期性冒出来的尖峰）。
+	/// </summary>
+	private ulong _graveScanInterval = 15UL;
+
+	/// <summary>是否"7 个墓碑按钮都已挂钩且节点仍存活"（都成立就不必再扫）。</summary>
+	private bool GraveAllHookedAndAlive()
+	{
+		try
+		{
+			if (_graveBtnNodes.Count < GraveButtons.Count)
+			{
+				return false;
+			}
+			for (int i = 0; i < _graveBtnNodes.Count; i++)
+			{
+				Node n = _graveBtnNodes[i];
+				if (n == null || !GodotObject.IsInstanceValid(n))
+				{
+					return false;
+				}
+				if (!_hooked.Contains(n.GetInstanceId()))
+				{
+					return false;
+				}
+			}
+			return true;
+		}
+		catch { return false; }
+	}
+
 	private void HookGraveButtons(object global)
 	{
 		try
@@ -731,8 +889,21 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 			{
 				return;
 			}
+			// ★ 性能闸门（见上面长注释）
+			if (GraveAllHookedAndAlive())
+			{
+				return;
+			}
+			ulong _gFrame = Engine.GetProcessFrames();
+			if (_graveScanFrame != 0UL && _gFrame - _graveScanFrame < _graveScanInterval)
+			{
+				return;
+			}
+			_graveScanFrame = _gFrame;
+
 			int found = 0, hooked = 0, missing = 0;
 			_lastCats.Clear();
+			_graveBtnNodes.Clear();
 			foreach (System.Collections.Generic.KeyValuePair<string, string> kv in GraveButtons)
 			{
 				Node root = _tree.Root;
@@ -743,6 +914,7 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 					continue;
 				}
 				found++;
+				_graveBtnNodes.Add(btn);
 				ulong id = btn.GetInstanceId();
 				if (_hooked.Contains(id))
 				{
@@ -775,6 +947,8 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 			//
 			//   ⇒ 改成"**每次从 0 变成 >0 就打一条**"（= 每次新进主菜单、成功挂钩都留痕），
 			//     这才是真正需要的那条证据。其它变化不刷屏。
+			_graveScanInterval = (found > 0) ? 15UL : 60UL;   // ★ 自适应退避
+
 			if (found > 0 && _lastFoundCount <= 0)
 			{
 				Diag("墓碑按钮挂钩成功：找到=" + found + "/" + GraveButtons.Count
@@ -1023,7 +1197,7 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 			{
 				return;
 			}
-			_pChapterId.SetValue(global, want);
+			SetInt(_pChapterId, global, want);
 			Diag("墓碑按下：" + cat + " → 预置章节 " + want
 				+ (JumpToMainCategoryPage
 					? "（开关=开：借游戏的定位/高亮，随后钉回章节页）"
@@ -1100,7 +1274,66 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 		return null;
 	}
 
-	private void WriteSaved(string cat, int chapterId)
+	/// <summary>读 Global.Instance.currentLevelId（关卡 id）；读不到返回 -1。</summary>
+	private int CurrentLevelId()
+	{
+		try
+		{
+			object g = _pGlobal == null ? null : _pGlobal.GetValue(null);
+			if (g == null) { return -1; }
+			object v = GetMember(g, "currentLevelId");
+			return v == null ? -1 : Int(v, -1);
+		}
+		catch { return -1; }
+	}
+
+	/// <summary>
+	/// ★ 延后选中"上次的具体关卡"。
+	/// 为什么必须延后：`Select()` 在 **Chapter 态**下调会**切页**（文件内长注释的警告），
+	/// 必须等章节展开成关卡列表（`currentMode == Level`）之后才安全。
+	/// 做法：用 SceneTreeTimer 连续重试（最多 8 次 × 0.15s），
+	/// 成功就停；一直不成功 ⇒ **什么都不做**（自然停在章节页，等价于 chapterList 行为），不报错刷屏。
+	/// </summary>
+	private void TrySelectLevelDeferred(string cat, int attempt)
+	{
+		try
+		{
+			if (_pendingLevelId < 0) { return; }
+			if (attempt >= 8) { Diag("选关卡超时，停在章节页（id=" + _pendingLevelId + "）"); _pendingLevelId = -1; return; }
+			if (_tree == null || !GodotObject.IsInstanceValid(_tree)) { return; }
+
+			Node lc = FindNodeByClassName(_tree.Root, "LevelChoose");
+			if (lc != null && GodotObject.IsInstanceValid(lc))
+			{
+				object mode = GetMember(lc, "currentMode");
+				int mi = mode == null ? -1 : Int(mode, -1);
+				if (mi == 1)   // Level 态 ⇒ 可以安全选关卡
+				{
+					try
+					{
+						System.Reflection.MethodInfo m = lc.GetType().GetMethod("Select",
+							System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance,
+							null, new Type[] { typeof(int) }, null);
+						if (m != null)
+						{
+							m.Invoke(lc, new object[] { _pendingLevelId });
+							Diag("直达关卡：大类=" + cat + " 关卡 id=" + _pendingLevelId);
+							_pendingLevelId = -1;
+							return;
+						}
+					}
+					catch { }
+				}
+			}
+			// 还没到 Level 态 ⇒ 再等一会
+			int next = attempt + 1;
+			SceneTreeTimer timer = _tree.CreateTimer(0.15);
+			timer.Timeout += () => TrySelectLevelDeferred(cat, next);
+		}
+		catch { }
+	}
+
+	private void WriteSaved(string cat, int chapterId, string prefix = SaveKeyPrefix)
 	{
 		try
 		{
@@ -1114,14 +1347,14 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 			{
 				return;
 			}
-			keyDict[SaveKeyPrefix + cat] = chapterId;
+			keyDict[prefix + cat] = chapterId;
 			// 立刻落盘（游戏自己也会存，但别指望时机）
 			try { _mSave?.Invoke(mgr, null); } catch { }
 		}
 		catch { }
 	}
 
-	private int ReadSaved(string cat)
+	private int ReadSaved(string cat, string prefix = SaveKeyPrefix)
 	{
 		try
 		{
@@ -1135,7 +1368,7 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 			{
 				return -1;
 			}
-			string k = SaveKeyPrefix + cat;
+			string k = prefix + cat;
 			if (!keyDict.ContainsKey(k))     // ★ 必须守卫：否则索引器可能抛
 			{
 				return -1;
@@ -1205,6 +1438,65 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 	}
 
 	// ================================================================ 反射
+
+	// ============================================================ 反射写入的稳健路径
+	//
+	// ⚠️ 血泪教训（0.30.0 实测）：
+	//   游戏导出时裁剪了 BCL，`PropertyInfo.SetValue(object, object)` 这个**两参重载没了**，
+	//   直接调用会抛 `MissingMethodException` —— 而且是**每帧抛**（在 OnProcessFrame 里），
+	//   日志被刷爆、写入永远失败。
+	//   `MethodInfo.Invoke` 是活的（本文件多处正常使用），所以写属性一律走 setter 的 Invoke。
+	//
+	// 依次尝试：
+	//   ① setter 的 MethodInfo.Invoke      —— 最可靠
+	//   ② PropertyInfo.SetValue(obj, v, null)（三参重载，与被裁的两参不是同一个方法）
+	//   ③ 都失败则返回 false，由调用方 WarnOnce 报一次（不每帧刷屏）
+
+	private static bool TrySetProperty(PropertyInfo p, object target, object value)
+	{
+		if (p == null)
+		{
+			return false;
+		}
+		try
+		{
+			MethodInfo setter = p.GetSetMethod(true);
+			if (setter != null)
+			{
+				setter.Invoke(target, new object[] { value });
+				return true;
+			}
+		}
+		catch { }
+		try
+		{
+			p.SetValue(target, value, null);
+			return true;
+		}
+		catch { }
+		return false;
+	}
+
+	/// <summary>写一个 int 属性（写不进去只报一次，不抛）。</summary>
+	private static void SetInt(PropertyInfo p, object target, int value)
+	{
+		if (!TrySetProperty(p, target, value))
+		{
+			WarnOnce("SetInt", "写入失败（属性被裁剪或无 setter）：" + (p == null ? "null" : p.Name));
+		}
+	}
+
+	/// <summary>同一句提示只报一次 —— 这些代码在每帧路径上，不节制会把日志刷爆。</summary>
+	private static readonly System.Collections.Generic.HashSet<string> _warnedOnce = new System.Collections.Generic.HashSet<string>();
+	private static void WarnOnce(string tag, string msg)
+	{
+		if (!EnableInfoLog) { return; }
+		// ★ 2026-10-14：该输出原先绕过日志开关，现统一受 enableLog 控制
+		if (_warnedOnce.Add(tag))
+		{
+			try { GD.PrintErr("[LevelQuickJump] " + msg); } catch { }
+		}
+	}
 
 	private bool EnsureReflection()
 	{
@@ -1497,6 +1789,66 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 		catch { return null; }
 	}
 
+	// ─────────────────────────────────────────────────────────────────────────
+	// ★★ 性能（2026-10-12 真机探针定位）：**本 Mod 曾经是全套 Mod 里最贵的一个 —— 21.0ms/帧**
+	//
+	// 元凶就是下面这一句（在 OnProcessFrame 里**每帧**执行）：
+	//     bool inLevelChoose = FindNodeByClassName(_tree.Root, "LevelChoose") != null;
+	// `FindNodeByClassName` 是**逐节点递归 + 每节点一次反射式类型名比较**
+	// （`IsSubclassNamed` 还要沿 BaseType 链逐级比字符串）。菜单里树小还看不出来，
+	// **战斗场景树一大人均 20ms 级** —— 真机采样：均 21.03ms、中位 22.87ms，
+	// 而当时 12 个 Mod 的回调合计才 32.5ms、帧周期 51.8ms ⇒ 它一个吃掉全帧的 40%。
+	//
+	// 修法：**按场景缓存**。关卡选择节点属于某个场景，`CurrentScene` 变了才需要重查
+	// （`CurrentScene` 只是一次属性读，几乎免费），节点被销毁时再用 `IsInstanceValid` 兜底，
+	// 另外每 60 帧强制复查一次作为保险。每帧成本从 21ms 降到 ~0。
+	// ─────────────────────────────────────────────────────────────────────────
+	private Node _lcCached;
+	private ulong _lcSceneId = ulong.MaxValue;
+	private ulong _lcFrame;
+	private bool _lcHave;      // 「已缓存过结果」——**包含"没找到"**，见下面注释
+
+	/// <summary>缓存版"取关卡选择节点"：按场景变化/节点失效/每 60 帧复查时才真正走树。</summary>
+	private Node CachedLevelChoose()
+	{
+		try
+		{
+			if (_tree == null || !GodotObject.IsInstanceValid(_tree) || _tree.Root == null)
+			{
+				return null;
+			}
+			ulong f = Engine.GetProcessFrames();
+			Node sc = _tree.CurrentScene;
+			ulong sid = (sc == null || !GodotObject.IsInstanceValid(sc)) ? 0UL : sc.GetInstanceId();
+			// 节点被销毁（换场景）⇒ 缓存作废，立刻重查
+			if (_lcCached != null && !GodotObject.IsInstanceValid(_lcCached))
+			{
+				_lcCached = null;
+				_lcHave = false;
+			}
+			// ⚠️⚠️ 关键教训：**"没找到"也必须算作有效缓存**。
+			//   第一版写成 `cachedOk = _lcCached != null && IsInstanceValid(_lcCached)`，
+			//   于是在**战斗场景**（本来就没有 LevelChoose 节点）里它恒为 false
+			//   ⇒ 每一帧照样重走整树。真机实测：修完这版以后该 Mod 仍占 14.17ms/帧
+			//   （中位 6.09 = 菜单帧便宜，p95 42.5 = 战斗帧整树），就是这个原因。
+			if (!_lcHave || sid != _lcSceneId || f - _lcFrame >= 60UL)
+			{
+				_lcSceneId = sid;
+				_lcFrame = f;
+				_lcHave = true;
+				// 优先用引擎原生 find_child（搜索整个在 C++ 里做，比 C# 递归整树快一个数量级），
+				// 找不到再退回按类名递归（该类节点名不一定与类名相同）。
+				_lcCached = _tree.Root.FindChild("LevelChoose", true, false);
+				if (_lcCached == null)
+				{
+					_lcCached = FindNodeByClassName(_tree.Root, "LevelChoose");
+				}
+			}
+			return _lcCached;
+		}
+		catch { return null; }
+	}
+
 	private static Node FindNodeByClassName(Node node, string className)
 	{
 		if (node == null)
@@ -1640,7 +1992,11 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 					| BindingFlags.Instance | BindingFlags.DeclaredOnly);
 				if (p != null && p.CanWrite && p.PropertyType == typeof(bool))
 				{
-					p.SetValue(target, v);
+					// ★ 不能用 PropertyInfo.SetValue(object, object) —— 该重载被游戏裁剪，0.30.0 上抛 MissingMethodException
+		if (!TrySetProperty(p, target, v))
+		{
+			WarnOnce("SetValue", "属性写入失败（裁剪）：" + name);
+		}
 					return;
 				}
 			}
@@ -1650,7 +2006,15 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 					| BindingFlags.Instance | BindingFlags.DeclaredOnly);
 				if (f != null && f.FieldType == typeof(bool))
 				{
-					f.SetValue(target, v);
+					// FieldInfo.SetValue 也做保护：被裁剪时报告而不是每帧抛
+		try
+		{
+			f.SetValue(target, v);
+		}
+		catch (Exception ex)
+		{
+			WarnOnce("SetField", "字段写入失败：" + name + "：" + ex.GetBaseException().Message);
+		}
 					return;
 				}
 			}
@@ -1669,6 +2033,27 @@ public sealed class LevelQuickJumpEntry : IXWModRuntimeEntry
 
 	private void Warn(string msg)
 	{
+		if (!EnableInfoLog) { return; }
+		// ★ 2026-10-14：该输出原先绕过日志开关，现统一受 enableLog 控制
 		try { GD.PrintErr(LogPrefix + msg); } catch { }
+	}
+	private bool _settingsSubscribedLqj;
+
+	private void OnRuntimeSettingsChanged(System.Collections.Generic.IReadOnlyList<string> keys)
+	{
+		try
+		{
+			// ★ 配置保存后重读（各 Mod 的应用逻辑保持既有入口）
+			OnRuntimeSettingsChangedImpl(keys);
+		}
+		catch { }
+	}
+
+
+	private void OnRuntimeSettingsChangedImpl(System.Collections.Generic.IReadOnlyList<string> keys)
+	{
+		if (_context == null) { return; }
+		try { EnableInfoLog = ReadLogSetting(_context); } catch { }
+		ApplyJumpTargetSetting(_context);   // ★ jumpTarget 保存后立即重读生效
 	}
 }

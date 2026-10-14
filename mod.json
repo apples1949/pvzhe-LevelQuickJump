@@ -2,21 +2,69 @@
   "schemaVersion": 2,
   "id": "levelquickjump",
   "name": "墓碑直达上次关卡",
-  "version": "1.4.0",
-  "author": "本地",
-  "description": "点主界面墓碑进入关卡选择时：停在「章节选择页」，并把上次打开的那个章节自动滚到正中（居中项放大高亮），不用手动滑动，直接点它进关卡。按大类分别记忆、存进存档。v1.4.0：修复游戏 Global.isEditor 状态泄漏 —— 进过自制关卡选择页再退出后，到任意关卡暂停会误显示「返回编辑器」；现在非编辑器场景下自动清掉该标志（编辑器内测试试玩 DiyLevel/LoadLevel/OnlineLevel 三种情况保留不动）。",
+  "version": "1.4.2",
+  "author": "apples1949",
+  "description": "点主界面墓碑进入关卡选择时：停在「章节选择页」，并把上次打开的那个章节自动滚到正中（居中项放大高亮），不用手动滑动，直接点它进关卡。按大类分别记忆、存进存档。",
+  "playInstructions": "点墓碑时直接跳到上次玩到的进度，省去逐关翻找。\n1. 可设置为「直达章节」或「直达关卡」，在配置页里选。\n2. 选项 → Mod 管理 → 墓碑直达上次关卡 → 配置。",
   "dependencies": [],
   "conflicts": [],
   "provides": {},
   "overrides": {},
   "scripts": [],
+  "settings": [
+    {
+      "key": "aboutChangelog",
+      "type": "text",
+      "label": "更新内容",
+      "group": "关于",
+      "content": "v1.4.2 · 2026-10-11\n精简：落地层选项收敛为两个（停章节选择页 / 直达上次的关卡）；原「直达章节」与「直达关卡」行为重复已合并。\nv1.4.1 · 2026-10-11\n修复：改「目标层级」配置后不生效（配置保存后立即重读）。\nv1.4.0 · 当前版本\n（更早的历史记录未保留）"
+    },
+    {
+      "key": "jumpTarget",
+      "type": "enum",
+      "label": "点墓碑后落地层",
+      "group": "功能",
+      "default": "chapterList",
+      "description": "点击墓碑后落地的位置：停在章节选择页（默认，自己挑关）/ 直达上次的关卡（自动展开章节并选中上次玩的关卡）。",
+      "applyMode": "immediate",
+      "affectsGameplay": false,
+      "options": [
+        {
+          "value": "chapterList",
+          "label": "停在章节选择页（默认）"
+        },
+        {
+          "value": "level",
+          "label": "直达上次的关卡"
+        }
+      ]
+    },
+    {
+      "key": "enableLog",
+      "type": "bool",
+      "label": "输出诊断日志",
+      "group": "诊断",
+      "description": "排查问题时打开，会把运行状态写进 godot.log。平时关掉，不刷日志。",
+      "applyMode": "immediate",
+      "affectsGameplay": false,
+      "default": false
+    },
+    {
+      "key": "aboutAuthor",
+      "type": "richtext",
+      "label": "作者与链接",
+      "group": "关于",
+      "content": "墓碑直达上次关卡 v1.4.0 · 作者：apples1949\n\n[url=https://space.bilibili.com/186773722]B 站空间[/url]\n[url=https://apples1949.lanzouc.com/b007uuknqd]蓝奏云下载（密码 762b）[/url]\n\n本模组为玩家自制 Mod，与《植物大战僵尸杂交重制版》官方无隶属关系。\n赞助：微信扫码支持作者（见下方收款码图片）。"
+    }
+  ],
   "runtimeAssembly": "Runtime/ModAssembly.dll",
   "runtimeEntryType": "LevelQuickJumpEntry",
-  "runtimeApiVersion": 1,
+  "runtimeApiVersion": 3,
   "runtimeAssemblyPolicy": "optional",
   "blueprints": [],
   "translations": [],
   "resources": [
+    "Resources/SponsorQR.png",
     "Runtime/ModAssembly.dll"
   ]
 }

@@ -35,6 +35,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="..\..\QrCodeBitmap.cs" Link="QrCodeBitmap.cs" />
+    <Compile Include="..\..\SponsorQrInjector.cs" Link="SponsorQrInjector.cs" />
     <Compile Remove="check_*.cs" />
     <None Include="check_*.cs" />
   </ItemGroup>
